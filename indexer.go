@@ -19,7 +19,7 @@ const (
 	GEMS_FROM     = "http://ruby.taobao.org/"    //上级rubygems源，注意末尾有斜杠，与官方格式保持一致
 	GEMS_TO       = "/data/opensources/rubygems" //本地存放目录
 	GEMSPECS_DIR  = "quick/Marshal.4.8/"
-	NUM_GOROUTINE = 10
+	NUM_GOROUTINE = 50
 )
 
 var BASE_FILES = []string{
@@ -38,13 +38,14 @@ var BASE_FILES = []string{
 
 var from, to, cur_file string
 var force bool
+var httpClient *http.Client
 
 func main() {
 	// 使用多核运行程序
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	fmt.Println("+------------------------------------+")
-	fmt.Println("|       Rubygems Indexer v1.1        |")
+	fmt.Println("|       Rubygems Indexer v1.2        |")
 	fmt.Println("|           by horsleyli             |")
 	fmt.Println("+------------------------------------+")
 
@@ -65,6 +66,9 @@ func main() {
 		flag.Usage()
 		return
 	}
+
+	httpClient = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 10}}
+
 	fetch_basefile()
 	fetch_gemspecs()
 }
@@ -119,21 +123,35 @@ func fetch_gemspecs() {
 		<-finish
 		status_line := "[" + strconv.Itoa(i+1) + "/" + strconv.Itoa(filecount) + "] -> " + cur_file
 		cur_statuslen := len(status_line)
-		status_line += strings.Repeat(" ", max_statuslen-cur_statuslen) + "\r"
 		if cur_statuslen > max_statuslen {
 			max_statuslen = len(status_line)
 		}
+		status_line += strings.Repeat(" ", max_statuslen-cur_statuslen) + "\r"
 		fmt.Print(status_line)
 
 	}
 
-	fmt.Println("fetch gemspecs end!")
+	fmt.Println("\nfetch gemspecs end!")
 }
 
 func fetch(url, to string) (status string, err error) {
 	var out *os.File
 	var fileinfo os.FileInfo
 	var resp *http.Response
+
+	defer func() {
+		panic_err := recover()
+		if panic_err != nil {
+			if panic_err == "Head_Error" {
+				time.Sleep(500 * time.Millisecond)
+				if resp, err = httpClient.Head(url); err != nil { //retry
+					panic("Head_Error")
+				}
+			} else {
+				panic(panic_err)
+			}
+		}
+	}()
 
 	if !force { //检查本地文件的修改时间和上游服务器上的last-modified
 		if out, err = os.Open(to); err != nil {
@@ -144,8 +162,8 @@ func fetch(url, to string) (status string, err error) {
 			panic(err)
 		}
 
-		if resp, err = http.Head(url); err != nil {
-			panic(err)
+		if resp, err = httpClient.Head(url); err != nil {
+			panic("Head_Error")
 		}
 
 		last_mod, _ := time.Parse(time.RFC1123, resp.Header.Get("Last-Modified"))
@@ -159,7 +177,7 @@ func fetch(url, to string) (status string, err error) {
 	}
 	defer out.Close()
 
-	if resp, err = http.Get(url); err != nil {
+	if resp, err = httpClient.Get(url); err != nil {
 		panic(err)
 	}
 	defer resp.Body.Close()
