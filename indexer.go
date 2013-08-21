@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,7 +36,7 @@ var BASE_FILES = []string{
 	"quick/latest_index.rz",
 }
 
-var from, to string
+var from, to, cur_file string
 var force bool
 
 func main() {
@@ -96,23 +98,33 @@ func fetch_gemspecs() {
 	})
 
 	//准备并发开跑
-	finish := make(chan bool, NUM_GOROUTINE)
+	filecount := len(filelist)
+	finish := make(chan bool, filecount)
 	for i := 0; i < NUM_GOROUTINE; i++ {
 		go func(finish chan bool, i, n int) {
-			if n > len(filelist) {
-				n = len(filelist) //防止最后一次下表越界
+			if n > filecount {
+				n = filecount //防止最后一次下标越界
 			}
 			for ; i < n; i++ {
-				fmt.Print(" -> " + filelist[i])
-				status, _ := fetch(from+GEMSPECS_DIR+filelist[i], filepath.Join(to, GEMSPECS_DIR, filelist[i]))
-				fmt.Println("\t..." + status)
+				cur_file = filelist[i]
+				fetch(from+GEMSPECS_DIR+filelist[i], filepath.Join(to, GEMSPECS_DIR, filelist[i]))
+				finish <- true
 			}
 
-			finish <- true
-		}(finish, i*len(filelist)/NUM_GOROUTINE, (i+1)*len(filelist)/NUM_GOROUTINE)
+		}(finish, i*filecount/NUM_GOROUTINE, (i+1)*filecount/NUM_GOROUTINE)
 	}
-	for i := 0; i < NUM_GOROUTINE; i++ {
+
+	max_statuslen := 0
+	for i := 0; i < filecount; i++ {
 		<-finish
+		status_line := "[" + strconv.Itoa(i+1) + "/" + strconv.Itoa(filecount) + "] -> " + cur_file
+		cur_statuslen := len(status_line)
+		status_line += strings.Repeat(" ", max_statuslen-cur_statuslen) + "\r"
+		if cur_statuslen > max_statuslen {
+			max_statuslen = len(status_line)
+		}
+		fmt.Print(status_line)
+
 	}
 
 	fmt.Println("fetch gemspecs end!")
