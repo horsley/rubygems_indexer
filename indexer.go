@@ -8,14 +8,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
 //gems相关配置默认值
 const (
-	GEMS_FROM    = "http://ruby.taobao.org/"    //上级rubygems源，注意末尾有斜杠，与官方格式保持一致
-	GEMS_TO      = "/data/opensources/rubygems" //本地存放目录
-	GEMSPECS_DIR = "quick/Marshal.4.8/"
+	GEMS_FROM     = "http://ruby.taobao.org/"    //上级rubygems源，注意末尾有斜杠，与官方格式保持一致
+	GEMS_TO       = "/data/opensources/rubygems" //本地存放目录
+	GEMSPECS_DIR  = "quick/Marshal.4.8/"
+	NUM_GOROUTINE = 10
 )
 
 var BASE_FILES = []string{
@@ -36,8 +38,11 @@ var from, to string
 var force bool
 
 func main() {
+	// 使用多核运行程序
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	fmt.Println("+------------------------------------+")
-	fmt.Println("|       Rubygems Indexer v1.0        |")
+	fmt.Println("|       Rubygems Indexer v1.1        |")
 	fmt.Println("|           by horsleyli             |")
 	fmt.Println("+------------------------------------+")
 
@@ -46,7 +51,6 @@ func main() {
 		fmt.Println("  -d, -destination\tthe local path which contains index files and the \"gems\" sub-directory.")
 		fmt.Println("  -s, -source	\tthe upstream rubygems source url.")
 		fmt.Println("  -f	\tforce download all(default update only)")
-		//flag.PrintDefaults()
 	}
 	flag.StringVar(&from, "source", GEMS_FROM, "upstream rubygems source url.")
 	flag.StringVar(&from, "s", GEMS_FROM, "shorthand for source")
@@ -78,19 +82,38 @@ func fetch_basefile() {
 func fetch_gemspecs() {
 	fmt.Println("fetch gemspecs start!")
 
-	os.MkdirAll(filepath.Join(GEMS_TO, GEMSPECS_DIR), 0700)
-	filepath.Walk(filepath.Join(GEMS_TO, "gems"), func(path string, info os.FileInfo, err error) error {
+	os.MkdirAll(filepath.Join(to, GEMSPECS_DIR), 0700)
+	//遍历目录得到文件列表
+	filelist := make([]string, 0)
+	filepath.Walk(filepath.Join(to, "gems"), func(path string, info os.FileInfo, err error) error {
 		if info.Name() == "." || info.Name() == ".." {
 			return nil
 		}
 		gem_name := info.Name()
 		gemspec_name := gem_name[:len(gem_name)-len(filepath.Ext(gem_name))] + ".gemspec.rz"
-
-		fmt.Print(" -> " + gemspec_name)
-		status, _ := fetch(from+GEMSPECS_DIR+gemspec_name, filepath.Join(to, GEMSPECS_DIR, gemspec_name))
-		fmt.Println("\t..." + status)
+		filelist = append(filelist, gemspec_name)
 		return nil
 	})
+
+	//准备并发开跑
+	finish := make(chan bool, NUM_GOROUTINE)
+	for i := 0; i < NUM_GOROUTINE; i++ {
+		go func(finish chan bool, i, n int) {
+			if n > len(filelist) {
+				n = len(filelist) //防止最后一次下表越界
+			}
+			for ; i < n; i++ {
+				fmt.Print(" -> " + filelist[i])
+				status, _ := fetch(from+GEMSPECS_DIR+filelist[i], filepath.Join(to, GEMSPECS_DIR, filelist[i]))
+				fmt.Println("\t..." + status)
+			}
+
+			finish <- true
+		}(finish, i*len(filelist)/NUM_GOROUTINE, (i+1)*len(filelist)/NUM_GOROUTINE)
+	}
+	for i := 0; i < NUM_GOROUTINE; i++ {
+		<-finish
+	}
 
 	fmt.Println("fetch gemspecs end!")
 }
